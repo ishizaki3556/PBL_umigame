@@ -25,9 +25,39 @@ type AnthropicResponse = {
     };
 };
 
+// 回答を3種類に正規化する
+function normalizeAnswer(text: string): string {
+    const normalized = text
+        .replace(/\s/g, "")
+        .replace(/[。．,.、！!？?「」『』""]/g, "")
+        .trim()
+        .toLowerCase();
+
+    // 「はい」で始まる場合
+    if (
+        normalized.startsWith("はい") ||
+        normalized.includes("はい")
+    ) {
+        return "はい";
+    }
+
+    // 「いいえ」で始まる場合
+    if (
+        normalized.startsWith("いいえ") ||
+        normalized.includes("いいえ")
+    ) {
+        return "いいえ";
+    }
+
+    // それ以外は「関係ありません」
+    return "関係ありません";
+}
+
 export async function POST(request: Request) {
     try {
         const body = (await request.json()) as AskRequest;
+
+        console.log("[API] Request body:", body);
 
         if (!body.problemId || !body.question?.trim()) {
             return NextResponse.json(
@@ -55,6 +85,9 @@ export async function POST(request: Request) {
         const model =
             process.env.ANTHROPIC_MODEL || "claude-haiku-5-5";
 
+        console.log("[API] Model:", model);
+        console.log("[API] Question:", body.question);
+
         if (!apiKey) {
             return NextResponse.json(
                 {
@@ -67,6 +100,8 @@ export async function POST(request: Request) {
             );
         }
 
+        console.log("[API] Sending request to Anthropic...");
+
         const anthropicResponse = await fetch(
             "https://api.anthropic.com/v1/messages",
             {
@@ -78,24 +113,29 @@ export async function POST(request: Request) {
                 },
                 body: JSON.stringify({
                     model,
-                    max_tokens: 300,
+                    max_tokens: 30,
                     system: `
 あなたはウミガメのスープのゲームマスターです。
 
-以下の問題について、プレイヤーの質問に回答してください。
-
-問題:
+【問題】
 ${problem.question}
 
-真相:
+【真相】
 ${problem.answer}
 
-回答ルール:
-- 真相を直接すべて説明してはいけません。
-- 質問への回答は、基本的に「はい」「いいえ」「関係ありません」のいずれかで始めてください。
-- 必要に応じて、短い補足説明を1文だけ付けてください。
-- 日本語で回答してください。
-          `.trim(),
+【ルール】
+プレイヤーの質問に対して、次の3つのうち必ず1つだけを返してください。
+
+はい
+いいえ
+関係ありません
+
+重要：
+- 上記3つ以外の言葉を絶対に出力しないでください
+- 説明、理由、句読点、改行を付けないでください
+- 「はいです」「答えははい」のような言い方もしないでください
+- 3つのうち1つだけを返してください
+`.trim(),
                     messages: [
                         {
                             role: "user",
@@ -106,11 +146,15 @@ ${problem.answer}
             },
         );
 
+        console.log("[API] Response status:", anthropicResponse.status);
+
         const data =
             (await anthropicResponse.json()) as AnthropicResponse;
 
+        console.log("[API] Response data:", JSON.stringify(data, null, 2));
+
         if (!anthropicResponse.ok) {
-            console.error("Anthropic APIエラー:", data);
+            console.error("[API] Anthropic error:", data);
 
             return NextResponse.json(
                 {
@@ -124,13 +168,16 @@ ${problem.answer}
             );
         }
 
-        const answer = data.content
+        const rawAnswer = data.content
             ?.filter((item) => item.type === "text")
             .map((item) => item.text || "")
             .join("")
             .trim();
 
-        if (!answer) {
+        console.log("[API] Raw answer:", rawAnswer);
+
+        if (!rawAnswer) {
+            console.error("[API] Empty answer from Anthropic");
             return NextResponse.json(
                 {
                     error: "Anthropicの回答が空でした。",
@@ -141,11 +188,16 @@ ${problem.answer}
             );
         }
 
+        // ここが重要：回答を3種類に正規化する
+        const normalizedAnswer = normalizeAnswer(rawAnswer);
+
+        console.log("[API] Normalized answer:", normalizedAnswer);
+
         return NextResponse.json({
-            answer,
+            answer: normalizedAnswer,
         });
     } catch (error) {
-        console.error("質問処理に失敗しました:", error);
+        console.error("[API] Error:", error);
 
         return NextResponse.json(
             {
